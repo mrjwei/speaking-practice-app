@@ -2,14 +2,29 @@ from tkinter import *
 from tkinter.ttk import *
 from tkinter import messagebox
 from openai import OpenAI
+import os
+from dotenv import load_dotenv
 import wavio
 import uuid
 import pyttsx3
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
-from audio_recorder import AudioRecorder
-from audio_transcriber import AudioTranscriber
+from pyaudiocook import AudioRecorder, AudioTranscriber
+import notion_api as api
+
+load_dotenv()
+
+NOTION_API_TOKEN = os.getenv('NOTION_API_TOKEN')
+
+URL_SEG1 = 'https://api.notion.com/v1/blocks/'
+URL_SEG2 = '/children'
+
+PARTS = {
+  'Part 1': os.getenv('PAGE_ID_PART1'),
+  'Part 2': os.getenv('PAGE_ID_PART2'),
+  'Part 3': os.getenv('PAGE_ID_PART3'),
+}
 
 COLNUM = 12
 
@@ -25,7 +40,7 @@ class SpeakingPracticeApp(Frame):
     self.kwargs = kwargs
     self.speech_engine = pyttsx3.init()
     self.speech_engine.setProperty('rate', 150)
-    self.speech_engine.connect('finished-utterance', lambda: (self.speech_engine.endLoop, print('finished speaking')))
+    self.speech_engine.connect('finished-utterance', self._callback)
     self.speech_thread = None
 
     self.root = root
@@ -59,7 +74,7 @@ class SpeakingPracticeApp(Frame):
     self.utility_btns_frame = Frame(self.main_frame)
     self.utility_btns_frame.grid(row=0, column=0, sticky=E, padx=20, pady=[20, 10])
 
-    self.save_btn = Button(self.utility_btns_frame, text='Save Chat', command=self.save_chat_to_file, state=DISABLED)
+    self.save_btn = Button(self.utility_btns_frame, text='Save Chat', command=self.save_chat_to_notion, state=DISABLED)
     self.save_btn.grid(row=0, column=0, padx=[0, 5])
 
     self.reset_history_btn = Button(self.utility_btns_frame, text='Reset Chat', command=self.reset_chat_history, state=DISABLED)
@@ -138,6 +153,10 @@ class SpeakingPracticeApp(Frame):
     self.send_btn = Button(self.btns_frame, text='Send',
                            command=self.send, state=DISABLED)
     self.send_btn.grid(row=2, column=0, columnspan=COLNUM, sticky='we', pady=20)
+
+  def _callback(self):
+    self.speech_engine.endLoop()
+    print('finished speaking')
 
   def _on_select_mode(self, event):
     self.mode = MODES[self.mode_select.get().strip()]
@@ -266,39 +285,50 @@ class SpeakingPracticeApp(Frame):
     if len(self.chat_history) > 10:
       messages = self.chat_history[-10:]
 
-    completion = client.chat.completions.create(
-        model='gpt-4o-mini',
-        messages=messages
-    )
+    try:
+      completion = client.chat.completions.create(
+          model='gpt-4o-mini',
+          messages=messages
+      )
 
-    self.ai_text = completion.choices[0].message.content
-    self.chat_history.append(
-      {
-        'role': 'assistant',
-        'content': self.ai_text
-      }
-    )
-    self.num_chat_history.set(self.num_chat_history.get()+1)
-    # display ai response in chat box
-    self.ai_box.delete("1.0", END)
-    self.ai_box.insert(END, self.ai_text)
-    self.speech_thread = threading.Thread(target=self._speech)
-    self.speech_thread.start()
+      self.ai_text = completion.choices[0].message.content
+      self.chat_history.append(
+        {
+          'role': 'assistant',
+          'content': self.ai_text
+        }
+      )
+      self.num_chat_history.set(self.num_chat_history.get()+1)
+      # display ai response in chat box
+      self.ai_box.delete("1.0", END)
+      self.ai_box.insert(END, self.ai_text)
+      self.speech_thread = threading.Thread(target=self._speech)
+      self.speech_thread.start()
+    except Exception as e:
+      messagebox.showerror(title='Error', message=f'{e}')
 
   def _speech(self):
     self.speech_engine.say(self.ai_text)
     self.speech_engine.startLoop()
 
-  def save_chat_to_file(self):
-    path = Path('./_chats')
-    if not path.exists():
-      path.mkdir(parents=True, exist_ok=True)
-    current_time = datetime.now()
-    timestamp_str = current_time.strftime("%Y-%m-%d-%H-%M-%S")
-    filepath = path / f'{timestamp_str}.txt'
-    with open(filepath, 'w') as f:
-      f.write("\n\n".join(history['content'] for history in self.chat_history))
-    self.save_btn.configure(state=DISABLED)
+  def save_chat_to_notion(self):
+    children = []
+    for message in self.chat_history[1:]:
+      if message['role'] == 'assistant':
+        block = api.create_block_object('heading_3', ('text', 'AI:'))
+      else:
+        block = api.create_block_object('heading_3', ('text', 'Me:'))
+      children.extend([block, api.create_block_object('paragraph', ('text', message['content']))])
+    data = {
+      'children': children
+    }
+    url = URL_SEG1 + PARTS['Part 1'] + URL_SEG2
+    try:
+      api.send_patch_request(url, NOTION_API_TOKEN, data)
+      messagebox.showinfo(title="Done", message="Task succeeded.")
+      self.save_btn.configure(state=DISABLED)
+    except Exception as e:
+      messagebox.showerror(title='Error', message=f'{e}')
 
   def reset_chat_history(self):
     self.chat_history = [
@@ -322,7 +352,7 @@ class SpeakingPracticeApp(Frame):
 
     # only save to file when there was conversation
     if len(self.chat_history) > 3:
-      self.save_chat_to_file()
+      self.save_chat_to_notion()
 
     self.root.destroy()
 
