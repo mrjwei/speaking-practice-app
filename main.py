@@ -391,7 +391,10 @@ class SpeakingPracticeApp(Frame):
 
     # only save to file when there was conversation
     if self.num_chat_history_to_save.get() > 0:
-      self.save_chat_to_notion()
+      should_save = messagebox.askyesno(
+          "Save Chat", "Do you want to save the chat?")
+      if should_save:
+        self.save_chat_to_notion()
 
     if self.is_loop_running:
       self.speech_engine.endLoop()
