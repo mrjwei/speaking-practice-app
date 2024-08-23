@@ -40,8 +40,8 @@ class SpeakingPracticeApp(Frame):
     self.kwargs = kwargs
     self.speech_engine = pyttsx3.init()
     self.speech_engine.setProperty('rate', 150)
-    self.speech_engine.connect('finished-utterance', self._callback)
     self.speech_thread = None
+    self.is_loop_running = False
 
     self.root = root
     self.root.title('Speaking Practice App')
@@ -58,7 +58,10 @@ class SpeakingPracticeApp(Frame):
         'content': f'You are a native English teacher. From now on, please help me practise English speaking for IELTS speaking test. You should ask me 4 to 5 questions in total on a topic about me or things that are closely related to me. You should ask only one question per time and should end our conversation after the specified number of questions by saying it is the end for the practice. If relevant, please correct my mistakes on grammars, choice of words, etc. Please choose questions as close to real test as possible and please use UK English instead of US English. After final question, please give me a score based on IELTS 9.0 scale.'
       },
     ]
+    self.chat_history_to_save = []
+
     self.num_chat_history = IntVar(value=len(self.chat_history))
+    self.num_chat_history_to_save = IntVar(value=len(self.chat_history_to_save))
 
     self.recorder = AudioRecorder()
 
@@ -80,7 +83,8 @@ class SpeakingPracticeApp(Frame):
     self.reset_history_btn = Button(self.utility_btns_frame, text='Reset Chat', command=self.reset_chat_history, state=DISABLED)
     self.reset_history_btn.grid(row=0, column=1, padx=5)
 
-    self.num_chat_history.trace_add('write', self._toggle_state_of_save_and_reset_btn)
+    self.num_chat_history.trace_add('write', self._toggle_state_of_reset_btn)
+    self.num_chat_history_to_save.trace_add('write', self._toggle_state_of_save_btn)
 
     self.quit_btn = Button(self.utility_btns_frame, text='Quit', command=self.quit)
     self.quit_btn.grid(row=0, column=2, padx=[5, 0])
@@ -154,10 +158,6 @@ class SpeakingPracticeApp(Frame):
                            command=self.send, state=DISABLED)
     self.send_btn.grid(row=2, column=0, columnspan=COLNUM, sticky='we', pady=20)
 
-  def _callback(self):
-    self.speech_engine.endLoop()
-    print('finished speaking')
-
   def _on_select_mode(self, event):
     self.mode = MODES[self.mode_select.get().strip()]
 
@@ -167,12 +167,16 @@ class SpeakingPracticeApp(Frame):
   def _on_ai_text_change(self, event):
     pass
 
-  def _toggle_state_of_save_and_reset_btn(self, *args):
-    if self.num_chat_history.get() > 2:
+  def _toggle_state_of_save_btn(self, *args):
+    if self.num_chat_history_to_save.get() > 0:
       self.save_btn.configure(state=NORMAL)
-      self.reset_history_btn.configure(state=NORMAL)
     else:
       self.save_btn.configure(state=DISABLED)
+
+  def _toggle_state_of_reset_btn(self, *args):
+    if self.num_chat_history.get() > 1:
+      self.reset_history_btn.configure(state=NORMAL)
+    else:
       self.reset_history_btn.configure(state=DISABLED)
 
   def start_timer(self):
@@ -236,12 +240,6 @@ class SpeakingPracticeApp(Frame):
           "Save Recording", "Do you want to save the recording?")
       if should_save:
         self.my_text = self.transcribe().strip()
-        self.chat_history.append(
-        {
-          'role': 'user',
-          'content': self.my_text
-        })
-        self.num_chat_history.set(self.num_chat_history.get()+1)
         # display my recording text in chat box
         self.my_box.delete("1.0", END)
         self.my_box.insert(END, self.my_text)
@@ -278,9 +276,35 @@ class SpeakingPracticeApp(Frame):
     self.recorder.recordings = []
     self.audio_data = None
 
+  def update_message(self, mode='both'):
+    if mode == 'both':
+      self.my_text = self.my_box.get("1.0", END)
+      self.ai_text = self.ai_box.get("1.0", END)
+    elif mode == 'my_text':
+      self.my_text = self.my_box.get("1.0", END)
+    elif mode == 'ai_text':
+      self.ai_text = self.ai_box.get("1.0", END)
+
   def send(self):
     # feed self.my_text to openai to generate response
     client = OpenAI()
+
+    self.update_message(mode='my_text')
+
+    self.chat_history.append(
+      {
+        'role': 'user',
+        'content': self.my_text
+      })
+    self.num_chat_history.set(self.num_chat_history.get()+1)
+    self.chat_history_to_save.append(
+      {
+        'role': 'user',
+        'content': self.my_text
+      }
+    )
+    self.num_chat_history_to_save.set(self.num_chat_history_to_save.get()+1)
+
     messages = self.chat_history
     if len(self.chat_history) > 10:
       messages = self.chat_history[-10:]
@@ -299,6 +323,14 @@ class SpeakingPracticeApp(Frame):
         }
       )
       self.num_chat_history.set(self.num_chat_history.get()+1)
+      self.chat_history_to_save.append(
+        {
+          'role': 'assistant',
+          'content': self.ai_text
+        }
+      )
+      self.num_chat_history_to_save.set(self.num_chat_history_to_save.get()+1)
+
       # display ai response in chat box
       self.ai_box.delete("1.0", END)
       self.ai_box.insert(END, self.ai_text)
@@ -309,16 +341,19 @@ class SpeakingPracticeApp(Frame):
 
   def _speech(self):
     self.speech_engine.say(self.ai_text)
-    self.speech_engine.startLoop()
+    if not self.is_loop_running:
+      self.is_loop_running = True
+      self.speech_engine.startLoop()
 
   def save_chat_to_notion(self):
     children = []
-    for message in self.chat_history[1:]:
+    for message in self.chat_history_to_save:
       if message['role'] == 'assistant':
         block = api.create_block_object('heading_3', ('text', 'AI:'))
       else:
         block = api.create_block_object('heading_3', ('text', 'Me:'))
       children.extend([block, api.create_block_object('paragraph', ('text', message['content']))])
+    children.append(api.create_block_object('divider'))
     data = {
       'children': children
     }
@@ -327,6 +362,8 @@ class SpeakingPracticeApp(Frame):
       api.send_patch_request(url, NOTION_API_TOKEN, data)
       messagebox.showinfo(title="Done", message="Task succeeded.")
       self.save_btn.configure(state=DISABLED)
+      self.chat_history_to_save = []
+      self.num_chat_history_to_save.set(0)
     except Exception as e:
       messagebox.showerror(title='Error', message=f'{e}')
 
@@ -337,6 +374,9 @@ class SpeakingPracticeApp(Frame):
         'content': f'You are a native English teacher. From now on, please help me practise English speaking for IELTS speaking test. You should ask me 4 to 5 questions in total on a topic about me or things that are closely related to me. You should ask only one question per time and should end our conversation after the specified number of questions by saying it is the end for the practice. If relevant, please correct my mistakes on grammars, choice of words, etc. Please choose questions as close to real test as possible and please use UK English instead of US English. After final question, please give me a score based on IELTS 9.0 scale.'
       },
     ]
+    self.num_chat_history.set(1)
+    self.chat_history_to_save = []
+    self.num_chat_history_to_save.set(0)
     self.my_box.delete("1.0", END)
     self.ai_box.delete("1.0", END)
     self.reset_history_btn.configure(state=DISABLED)
@@ -348,11 +388,16 @@ class SpeakingPracticeApp(Frame):
       self.recorder.audio_thread.join()
     if self.speech_thread:
       self.speech_thread.join()
-    self.speech_engine = None
 
     # only save to file when there was conversation
-    if len(self.chat_history) > 3:
+    if self.num_chat_history_to_save.get() > 0:
       self.save_chat_to_notion()
+
+    if self.is_loop_running:
+      self.speech_engine.endLoop()
+      self.is_loop_running = False
+
+    self.speech_engine = None
 
     self.root.destroy()
 

@@ -1,21 +1,29 @@
 import requests
 import json
 
-def create_block_object(block_type, *rich_text_types_and_contents):
-  return {
+def create_block_object(block_type, rich_text_types_and_contents=None):
+  if rich_text_types_and_contents is None:
+    return {
             "object": "block",
             "type": block_type,
-            block_type: {
-              "rich_text": [
-                {
-                  "type": t,
-                  t: {
-                    "content": c
-                  }
-                } for t, c in rich_text_types_and_contents
-              ]
-            }
+            block_type: {}
           }
+  if isinstance(rich_text_types_and_contents, tuple) and len(rich_text_types_and_contents) == 2:
+    t, c = rich_text_types_and_contents
+    return {
+              "object": "block",
+              "type": block_type,
+              block_type: {
+                "rich_text": [
+                  {
+                    "type": t,
+                    t: {
+                      "content": c
+                    }
+                  }
+                ]
+              }
+            }
 
 def send_patch_request(url, token, data):
   headers = {
